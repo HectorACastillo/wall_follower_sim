@@ -6,6 +6,7 @@ from scipy import stats
 import rospy
 from rospy.numpy_msg import numpy_msg
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Float32
 from ackermann_msgs.msg import AckermannDriveStamped
 
 class WallFollower:
@@ -17,10 +18,10 @@ class WallFollower:
     SIDE = rospy.get_param("wall_follower/side")
     VELOCITY = rospy.get_param("wall_follower/velocity")
     DESIRED_DISTANCE = rospy.get_param("wall_follower/desired_distance")
-    SLICE_ANGLE = rospy.get_param("wall_follower/slice_angle")
-    KP = rospy.get_param("wall_follower/kp")
-    KI = rospy.get_param("wall_follower/ki")
-    KD = rospy.get_param("wall_follower/kd")
+    SLICE_ANGLE = np.pi/2
+    KP = 1.0
+    KI = 1.0
+    KD = 1.0
 
     integrator = 0.0
 
@@ -30,22 +31,23 @@ class WallFollower:
 
     def callback(self, scan):
         pub = rospy.Publisher(self.DRIVE_TOPIC, AckermannDriveStamped, queue_size = 10)
-
+        pub_error = rospy.Publisher("error", Float32, queue_size = 10)
         raw_ranges = np.array(scan.ranges)
-        floor = raw_ranges.size/2 - SIDE*np.pi/2 - self.SLICE_ANGLE/(2*scan.angle_increment)
-        ceil = raw_ranges.size/2 - SIDE*np.pi/2 + self.SLICE_ANGLE/(2*scan.angle_increment)
+        floor = int(raw_ranges.size/2 + (self.SIDE*np.pi - self.SLICE_ANGLE)/(2*scan.angle_increment))
+        ceil = int(raw_ranges.size/2 + (self.SIDE*np.pi + self.SLICE_ANGLE)/(2*scan.angle_increment))
         range_slice = raw_ranges[floor:ceil]
-        angle_slice = np.arrage(floor, ceil)*scan.angle_increment + scan.angle_min
-        wall_coords = np.array(np.cos(angle_slice), np.sin(angle_slice))
+        angle_slice = np.arange(floor, ceil)*scan.angle_increment + scan.angle_min
+        wall_coords = np.array([np.cos(angle_slice), np.sin(angle_slice)])
         # find the wall
-        slope, intercept = stats.linregress(wall_coords)
+        slope, intercept, r, p, std_error = stats.linregress(wall_coords)
 
         # find closest point on line to calculate error
-        e = self.DISTANCE - np.sqrt(np.amin(wall_coords[:,1]*wall_coords[:,2]))
-        integrator += e
+        e = self.DESIRED_DISTANCE - np.sqrt(np.amin(np.square(wall_coords[0,:])*np.square(wall_coords[1,:])))
+        self.integrator += e
+        pub_error.publish(e)
 
         ack = AckermannDriveStamped()
-        ack.drive.steering_angle = selfKP*e + KI*integrator + KD*slope
+        ack.drive.steering_angle = self.KP*e + self.KD*slope
         
         ack.drive.steering_angle_velocity = 0.0
         ack.drive.speed = self.VELOCITY
